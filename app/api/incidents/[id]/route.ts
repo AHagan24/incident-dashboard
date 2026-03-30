@@ -4,11 +4,17 @@ import Incident from "@/models/Incident";
 import { Types } from "mongoose";
 import type {
   IncidentPriority,
+  IncidentRecord,
   IncidentSeverity,
   IncidentStatus,
 } from "@/lib/types";
+import type { Server as SocketIOServer } from "socket.io";
 
 export const runtime = "nodejs";
+
+declare global {
+  var io: SocketIOServer | undefined;
+}
 
 const allowedStatus: IncidentStatus[] = [
   "Open",
@@ -78,10 +84,16 @@ export async function PATCH(
 
     await incident.save();
 
+    const hydratedIncident = JSON.parse(
+      JSON.stringify(incident),
+    ) as IncidentRecord;
+
+    global.io?.emit("incident:updated", hydratedIncident);
+
     return NextResponse.json(
       {
         message: "Incident updated successfully",
-        incident,
+        incident: hydratedIncident,
       },
       { status: 200 },
     );
