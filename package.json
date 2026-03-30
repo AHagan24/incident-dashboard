@@ -2,11 +2,14 @@
   "name": "incident-dashboard",
   "version": "0.1.0",
   "private": true,
+    "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "dev": "node server.js --dev",
     "build": "next build",
     "start": "node server.js",
-    "lint": "eslint"
+    "lint": "eslint ."
   },
   "dependencies": {
     "mongoose": "^9.3.3",
