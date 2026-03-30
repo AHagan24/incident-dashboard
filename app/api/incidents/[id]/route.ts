@@ -4,11 +4,17 @@ import Incident from "@/models/Incident";
 import { Types } from "mongoose";
 import type {
   IncidentPriority,
+  IncidentRecord,
   IncidentSeverity,
   IncidentStatus,
 } from "@/lib/types";
+import type { Server as SocketIOServer } from "socket.io";
 
 export const runtime = "nodejs";
+
+declare global {
+  var io: SocketIOServer | undefined;
+}
 
 const allowedStatus: IncidentStatus[] = [
   "Open",
@@ -19,7 +25,12 @@ const allowedStatus: IncidentStatus[] = [
 
 const allowedPriority: IncidentPriority[] = ["P1", "P2", "P3", "P4"];
 
-const allowedSeverity: IncidentSeverity[] = ["Critical", "High", "Medium", "Low"];
+const allowedSeverity: IncidentSeverity[] = [
+  "Critical",
+  "High",
+  "Medium",
+  "Low",
+];
 
 export async function PATCH(
   req: NextRequest,
@@ -28,7 +39,7 @@ export async function PATCH(
   try {
     const { id } = await params;
 
-    if (!id || !Types.ObjectId.isValid(id)) { 
+    if (!id || !Types.ObjectId.isValid(id)) {
       return NextResponse.json(
         { message: "Invalid incident id" },
         { status: 400 },
@@ -54,14 +65,20 @@ export async function PATCH(
       );
     }
 
-    if (body.priority !== undefined && !allowedPriority.includes(body.priority)) {
+    if (
+      body.priority !== undefined &&
+      !allowedPriority.includes(body.priority)
+    ) {
       return NextResponse.json(
         { message: "Invalid priority value" },
         { status: 400 },
       );
     }
 
-    if (body.severity !== undefined && !allowedSeverity.includes(body.severity)) {
+    if (
+      body.severity !== undefined &&
+      !allowedSeverity.includes(body.severity)
+    ) {
       return NextResponse.json(
         { message: "Invalid severity value" },
         { status: 400 },
@@ -78,10 +95,16 @@ export async function PATCH(
 
     await incident.save();
 
+    const hydratedIncident = JSON.parse(
+      JSON.stringify(incident),
+    ) as IncidentRecord;
+
+    global.io?.emit("incident:updated", hydratedIncident);
+
     return NextResponse.json(
       {
         message: "Incident updated successfully",
-        incident,
+        incident: hydratedIncident,
       },
       { status: 200 },
     );
