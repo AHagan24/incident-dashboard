@@ -2,6 +2,23 @@
 
 Real-time incident management dashboard built with Next.js, TypeScript, MongoDB, Socket.IO, and PostHog.
 
+## 🚀 Live Demo
+https://incident-dashboard-7jtt.onrender.com/
+
+## Screenshots
+
+### Real-time incident dashboard
+![Dashboard](./screenshots/dashboard.png)
+
+### Advanced filtering and search
+![Filters](./screenshots/filters.png)
+
+### Status updates and workflow management
+![Update](./screenshots/update.png)
+
+
+
+
 ## Features
 
 - Create and track incidents
