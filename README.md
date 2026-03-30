@@ -5,8 +5,8 @@ A full-stack incident management dashboard built with Next.js, MongoDB, and Sock
 ## 🚀 Live Demo
 [View Live App](https://incident-dashboard-7jtt.onrender.com/)
 
-## ⚡ Features
 
+## ⚡ Features
 -  Real-time incident updates with Socket.IO
 -  Advanced filtering (status, priority, severity)
 -  Search by title, service, and assignee
@@ -24,13 +24,6 @@ A full-stack incident management dashboard built with Next.js, MongoDB, and Sock
 - Tailwind CSS
 - PostHog (analytics-ready)
 
-## Getting Started
-
-1. Clone the repo
-2. Install dependencies
-
-```bash
-npm install
 
 ## 📸 Screenshots
 
@@ -43,5 +36,12 @@ npm install
 ### Status updates and workflow management
 ![Update](./screenshots/update.png)
 
+## Getting Started
+
+1. Clone the repo
+2. Install dependencies
+
+```bash
+npm install
 
 
