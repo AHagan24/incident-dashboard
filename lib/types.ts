@@ -15,6 +15,7 @@ export interface IncidentRecord {
   status: IncidentStatus;
   priority: IncidentPriority;
   severity: IncidentSeverity;
+  archived?: boolean;
   service?: string;
   assignee?: string;
   createdBy?: string;

@@ -10,11 +10,17 @@ declare global {
   var io: SocketIOServer | undefined;
 }
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   try {
     await connectToDatabase();
 
-    const incidents = await Incident.find().sort({ createdAt: -1 }).lean();
+    const archivedView = req.nextUrl.searchParams.get("view") === "archived";
+    const query = archivedView
+      ? { archived: true }
+      : { archived: { $ne: true } };
+    const incidents = await Incident.find(query)
+      .sort({ createdAt: -1 })
+      .lean();
 
     return NextResponse.json(
       { message: "Incidents fetched successfully", incidents },

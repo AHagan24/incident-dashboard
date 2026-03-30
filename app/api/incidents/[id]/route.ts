@@ -85,18 +85,46 @@ export async function PATCH(
       );
     }
 
-    if (body.title !== undefined) incident.title = body.title;
-    if (body.description !== undefined) incident.description = body.description;
-    if (body.status !== undefined) incident.status = body.status;
-    if (body.priority !== undefined) incident.priority = body.priority;
-    if (body.severity !== undefined) incident.severity = body.severity;
-    if (body.service !== undefined) incident.service = body.service;
-    if (body.assignee !== undefined) incident.assignee = body.assignee;
+    if (
+      body.archived !== undefined &&
+      typeof body.archived !== "boolean"
+    ) {
+      return NextResponse.json(
+        { message: "Invalid archived value" },
+        { status: 400 },
+      );
+    }
 
-    await incident.save();
+    const updates: Record<string, unknown> = {};
+
+    if (body.title !== undefined) updates.title = body.title;
+    if (body.description !== undefined) updates.description = body.description;
+    if (body.status !== undefined) updates.status = body.status;
+    if (body.priority !== undefined) updates.priority = body.priority;
+    if (body.severity !== undefined) updates.severity = body.severity;
+    if (body.archived !== undefined) updates.archived = body.archived;
+    if (body.service !== undefined) updates.service = body.service;
+    if (body.assignee !== undefined) updates.assignee = body.assignee;
+
+    const updatedIncident = await Incident.findByIdAndUpdate(
+      id,
+      { $set: updates },
+      {
+        new: true,
+        runValidators: true,
+        strict: false,
+      },
+    );
+
+    if (!updatedIncident) {
+      return NextResponse.json(
+        { message: "Incident not found" },
+        { status: 404 },
+      );
+    }
 
     const hydratedIncident = JSON.parse(
-      JSON.stringify(incident),
+      JSON.stringify(updatedIncident),
     ) as IncidentRecord;
 
     global.io?.emit("incident:updated", hydratedIncident);

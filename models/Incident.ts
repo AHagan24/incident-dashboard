@@ -6,6 +6,7 @@ export interface IIncident {
   status: "Open" | "Investigating" | "Monitoring" | "Resolved";
   priority: "P1" | "P2" | "P3" | "P4";
   severity: "Critical" | "High" | "Medium" | "Low";
+  archived: boolean;
   service?: string;
   assignee?: string;
   createdBy?: string;
@@ -40,6 +41,10 @@ const IncidentSchema = new Schema<IIncident>(
       enum: ["Critical", "High", "Medium", "Low"],
       default: "Medium",
     },
+    archived: {
+      type: Boolean,
+      default: false,
+    },
     service: {
       type: String,
       default: "",
@@ -61,7 +66,20 @@ const IncidentSchema = new Schema<IIncident>(
   },
 );
 
+const existingIncidentModel = models.Incident as
+  | mongoose.Model<IIncident>
+  | undefined;
+
+if (existingIncidentModel && !existingIncidentModel.schema.path("archived")) {
+  existingIncidentModel.schema.add({
+    archived: {
+      type: Boolean,
+      default: false,
+    },
+  });
+}
+
 const Incident =
-  models.Incident || model<IIncident>("Incident", IncidentSchema);
+  existingIncidentModel || model<IIncident>("Incident", IncidentSchema);
 
 export default Incident;

@@ -3,7 +3,6 @@
 import {
   startTransition,
   useEffect,
-  useEffectEvent,
   useRef,
   useState,
   type FormEvent,
@@ -45,6 +44,7 @@ type FormState = {
 type StatusFilter = IncidentStatus | "All";
 type PriorityFilter = IncidentPriority | "All";
 type SeverityFilter = IncidentSeverity | "All";
+type IncidentView = "active" | "archived";
 
 const defaultForm: FormState = {
   title: "",
@@ -85,7 +85,13 @@ const statusFilters: readonly StatusFilter[] = [
   "Resolved",
 ];
 
-const priorityFilters: readonly PriorityFilter[] = ["All", "P1", "P2", "P3", "P4"];
+const priorityFilters: readonly PriorityFilter[] = [
+  "All",
+  "P1",
+  "P2",
+  "P3",
+  "P4",
+];
 const severityFilters: readonly SeverityFilter[] = [
   "All",
   "Critical",
@@ -99,8 +105,11 @@ export default function IncidentDashboard() {
   const [form, setForm] = useState<FormState>(defaultForm);
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [updatingIncidentId, setUpdatingIncidentId] = useState<string | null>(null);
+  const [mutatingIncidentId, setMutatingIncidentId] = useState<string | null>(
+    null,
+  );
   const [error, setError] = useState<string | null>(null);
+  const [activeView, setActiveView] = useState<IncidentView>("active");
   const [activeStatus, setActiveStatus] = useState<StatusFilter>("All");
   const [activePriority, setActivePriority] = useState<PriorityFilter>("All");
   const [activeSeverity, setActiveSeverity] = useState<SeverityFilter>("All");
@@ -108,6 +117,8 @@ export default function IncidentDashboard() {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const toastIdRef = useRef(0);
   const toastTimeoutsRef = useRef<number[]>([]);
+  const activeViewRef = useRef<IncidentView>("active");
+  const refreshRequestRef = useRef(0);
 
   function showToast(message: string, tone: Toast["tone"]) {
     const id = toastIdRef.current++;
@@ -121,37 +132,64 @@ export default function IncidentDashboard() {
   }
 
   useEffect(() => {
+    activeViewRef.current = activeView;
+  }, [activeView]);
+
+  useEffect(() => {
+    setActiveStatus("All");
+    setActivePriority("All");
+    setActiveSeverity("All");
+    setSearchQuery("");
+  }, [activeView]);
+
+  useEffect(() => {
     return () => {
-      toastTimeoutsRef.current.forEach((timeoutId) => window.clearTimeout(timeoutId));
+      toastTimeoutsRef.current.forEach((timeoutId) =>
+        window.clearTimeout(timeoutId),
+      );
     };
   }, []);
 
-  const refreshIncidents = useEffectEvent(async () => {
-    try {
-      setError(null);
-      const response = await fetch("/api/incidents", { cache: "no-store" });
-
-      if (!response.ok) {
-        throw new Error("Failed to load incidents");
-      }
-
-      const data = (await response.json()) as IncidentResponse;
-      setIncidents(data.incidents);
-    } catch (refreshError) {
-      const message =
-        refreshError instanceof Error
-          ? refreshError.message
-          : "Failed to load incidents";
-      setError(message);
-    } finally {
-      setIsLoading(false);
-    }
-  });
-
   useEffect(() => {
-    refreshIncidents();
+    const requestId = refreshRequestRef.current + 1;
+    refreshRequestRef.current = requestId;
+
+    async function loadIncidents() {
+      try {
+        setError(null);
+        setIsLoading(true);
+        const response = await fetch(`/api/incidents?view=${activeView}`, {
+          cache: "no-store",
+        });
+
+        if (!response.ok) {
+          throw new Error("Failed to load incidents");
+        }
+
+        const data = (await response.json()) as IncidentResponse;
+
+        if (refreshRequestRef.current === requestId) {
+          setIncidents(sortIncidents(data.incidents));
+        }
+      } catch (refreshError) {
+        const message =
+          refreshError instanceof Error
+            ? refreshError.message
+            : "Failed to load incidents";
+
+        if (refreshRequestRef.current === requestId) {
+          setError(message);
+        }
+      } finally {
+        if (refreshRequestRef.current === requestId) {
+          setIsLoading(false);
+        }
+      }
+    }
+
+    void loadIncidents();
     posthog.capture("incident_dashboard_viewed");
-  }, [refreshIncidents]);
+  }, [activeView]);
 
   useEffect(() => {
     let socket: Socket | undefined;
@@ -162,20 +200,29 @@ export default function IncidentDashboard() {
       });
 
       socket.on("incident:created", (incident: IncidentRecord) => {
-        setIncidents((current) => {
-          const next = current.filter((item) => item._id !== incident._id);
-          return [incident, ...next];
-        });
+        if (!matchesIncidentView(incident, activeViewRef.current)) {
+          return;
+        }
+
+        setIncidents((current) => upsertIncident(current, incident));
       });
 
       socket.on("incident:updated", (incident: IncidentRecord) => {
-        setIncidents((current) =>
-          current.map((item) => (item._id === incident._id ? incident : item)),
-        );
+        setIncidents((current) => {
+          const next = current.filter((item) => item._id !== incident._id);
+
+          if (!matchesIncidentView(incident, activeViewRef.current)) {
+            return next;
+          }
+
+          return sortIncidents([...next, incident]);
+        });
       });
 
       socket.on("connect_error", () => {
-        setError((current) => current ?? "Live updates are temporarily offline.");
+        setError(
+          (current) => current ?? "Live updates are temporarily offline.",
+        );
       });
     } catch {
       setError((current) => current ?? "Live updates are temporarily offline.");
@@ -264,7 +311,7 @@ export default function IncidentDashboard() {
   }
 
   async function handleStatusChange(id: string, status: IncidentStatus) {
-    setUpdatingIncidentId(id);
+    setMutatingIncidentId(id);
     setError(null);
 
     try {
@@ -282,11 +329,7 @@ export default function IncidentDashboard() {
         throw new Error(data.message ?? "Failed to update incident");
       }
 
-      setIncidents((current) =>
-        current.map((incident) =>
-          incident._id === id ? data.incident : incident,
-        ),
-      );
+      setIncidents((current) => upsertIncident(current, data.incident));
       showToast(`Status updated to ${status}.`, "success");
     } catch (updateError) {
       const message =
@@ -296,32 +339,75 @@ export default function IncidentDashboard() {
       setError(message);
       showToast(message, "error");
     } finally {
-      setUpdatingIncidentId(null);
+      setMutatingIncidentId(null);
+    }
+  }
+
+  async function handleArchive(id: string) {
+    if (!window.confirm("Archive this resolved incident?")) {
+      return;
+    }
+
+    setMutatingIncidentId(id);
+    setError(null);
+
+    try {
+      const response = await fetch(`/api/incidents/${id}`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ archived: true }),
+      });
+
+      const data = (await response.json()) as IncidentMutationResponse;
+
+      if (!response.ok) {
+        throw new Error(data.message ?? "Failed to archive incident");
+      }
+
+      setIncidents((current) =>
+        current.filter((incident) => incident._id !== id),
+      );
+      showToast("Incident archived.", "success");
+    } catch (archiveError) {
+      const message =
+        archiveError instanceof Error
+          ? archiveError.message
+          : "Failed to archive incident";
+      setError(message);
+      showToast(message, "error");
+    } finally {
+      setMutatingIncidentId(null);
     }
   }
 
   return (
-    <main className="min-h-screen bg-[radial-gradient(circle_at_top,_rgba(248,113,113,0.22),_transparent_28%),linear-gradient(180deg,#111827_0%,#0f172a_45%,#020617_100%)] text-white">
+    <main className="min-h-screen bg-[radial-gradient(circle_at_top,_rgba(248,113,113,0.22),_transparent_28%),linear-gradient(180deg,#111827_0%,#0f172a_45%,#020617_100%)] text-white transition-all duration-300">
       <ToastViewport toasts={toasts} />
-      <div className="mx-auto flex w-full max-w-7xl flex-col gap-8 px-4 py-8 sm:px-6 lg:px-8">
-        <section className="grid gap-4 rounded-[2rem] border border-white/10 bg-white/5 p-6 shadow-2xl shadow-red-950/20 backdrop-blur sm:grid-cols-[1.7fr_1fr]">
-          <div className="space-y-4">
+      <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-8 sm:px-6 lg:px-8">
+        <section className="grid gap-4 rounded-[2rem] border border-white/10 bg-white/5 p-5 shadow-2xl shadow-red-950/20 backdrop-blur transition-all duration-300 sm:grid-cols-[1.7fr_1fr]">
+          <div className="flex flex-col gap-4">
             <p className="text-sm uppercase tracking-[0.35em] text-red-200/80">
               Realtime Ops Center
             </p>
             <h1 className="max-w-2xl text-4xl font-semibold tracking-tight text-white sm:text-5xl">
-              Live incident visibility across your services, teams, and response queue.
+              Live incident visibility across your services, teams, and response
+              queue.
             </h1>
             <p className="max-w-2xl text-sm leading-6 text-slate-300 sm:text-base">
-              MongoDB stores the source of truth, Socket.IO fans updates to every
-              connected dashboard, and PostHog captures how the team is using the
-              surface.
+              MongoDB stores the source of truth, Socket.IO fans updates to
+              every connected dashboard, and PostHog captures how the team is
+              using the surface.
             </p>
           </div>
 
-          <div className="grid gap-3 rounded-[1.5rem] border border-white/10 bg-slate-950/50 p-4">
+          <div className="grid auto-rows-fr gap-3 rounded-[1.5rem] border border-white/10 bg-slate-950/50 p-5 transition-all duration-300">
             <StatCard label="Open" value={statusSummary.Open} />
-            <StatCard label="Investigating" value={statusSummary.Investigating} />
+            <StatCard
+              label="Investigating"
+              value={statusSummary.Investigating}
+            />
             <StatCard label="Monitoring" value={statusSummary.Monitoring} />
             <StatCard label="Resolved" value={statusSummary.Resolved} />
           </div>
@@ -330,11 +416,13 @@ export default function IncidentDashboard() {
         <section className="grid gap-6 lg:grid-cols-[380px_minmax(0,1fr)]">
           <form
             onSubmit={handleSubmit}
-            className="space-y-4 rounded-[1.75rem] border border-white/10 bg-slate-950/70 p-5 shadow-xl shadow-black/20"
+            className="flex flex-col gap-5 rounded-[1.75rem] border border-white/10 bg-slate-950/70 p-5 shadow-xl shadow-black/20 transition-all duration-300"
           >
-            <div>
-              <h2 className="text-xl font-semibold text-white">Create incident</h2>
-              <p className="mt-1 text-sm text-slate-400">
+            <div className="flex flex-col gap-1">
+              <h2 className="text-xl font-semibold text-white">
+                Create incident
+              </h2>
+              <p className="text-sm text-slate-400">
                 Ship updates into MongoDB and broadcast them live.
               </p>
             </div>
@@ -343,7 +431,9 @@ export default function IncidentDashboard() {
               label="Title"
               required
               value={form.title}
-              onChange={(value) => setForm((current) => ({ ...current, title: value }))}
+              onChange={(value) =>
+                setForm((current) => ({ ...current, title: value }))
+              }
               placeholder="Database latency spike in us-east-1"
             />
 
@@ -399,7 +489,9 @@ export default function IncidentDashboard() {
               <Field
                 label="Service"
                 value={form.service}
-                onChange={(value) => setForm((current) => ({ ...current, service: value }))}
+                onChange={(value) =>
+                  setForm((current) => ({ ...current, service: value }))
+                }
                 placeholder="payments-api"
               />
             </div>
@@ -407,14 +499,16 @@ export default function IncidentDashboard() {
             <Field
               label="Assignee"
               value={form.assignee}
-              onChange={(value) => setForm((current) => ({ ...current, assignee: value }))}
+              onChange={(value) =>
+                setForm((current) => ({ ...current, assignee: value }))
+              }
               placeholder="On-call SRE"
             />
 
             <button
               type="submit"
               disabled={isSubmitting}
-              className="w-full rounded-full bg-red-500 px-4 py-3 text-sm font-semibold text-white transition hover:bg-red-400 disabled:cursor-not-allowed disabled:bg-red-950"
+              className="h-10 w-full rounded-full bg-red-500 px-4 text-sm font-semibold text-white transition-all duration-300 hover:bg-red-400 disabled:cursor-not-allowed disabled:bg-red-950"
             >
               {isSubmitting ? "Creating incident..." : "Broadcast incident"}
             </button>
@@ -426,16 +520,24 @@ export default function IncidentDashboard() {
             ) : null}
           </form>
 
-          <section className="space-y-4">
-            <div className="rounded-[1.5rem] border border-white/10 bg-slate-950/60 p-4">
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div>
-                  <p className="text-xs uppercase tracking-[0.3em] text-slate-400">
-                    Filters
-                  </p>
-                  <p className="mt-2 text-sm text-slate-300">
-                    Narrow incidents by status, priority, and severity.
-                  </p>
+          <section className="flex flex-col gap-4">
+            <div className="flex flex-col gap-4 rounded-[1.5rem] border border-white/10 bg-slate-950/60 p-5 transition-all duration-300">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  {(["active", "archived"] as const).map((view) => (
+                    <button
+                      key={view}
+                      type="button"
+                      onClick={() => setActiveView(view)}
+                      className={`h-10 rounded-full border px-4 text-sm capitalize transition-all duration-300 ${
+                        activeView === view
+                          ? "border-red-300/50 bg-red-400/15 text-red-100"
+                          : "border-white/10 bg-white/5 text-slate-300 hover:border-white/20 hover:text-white"
+                      }`}
+                    >
+                      {view} view
+                    </button>
+                  ))}
                 </div>
 
                 <button
@@ -452,19 +554,31 @@ export default function IncidentDashboard() {
                     activeSeverity === "All" &&
                     searchQuery.trim().length === 0
                   }
-                  className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm text-slate-300 transition hover:border-white/20 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+                  className="h-10 rounded-full border border-white/10 bg-white/5 px-4 text-sm text-slate-300 transition-all duration-300 hover:border-white/20 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   Clear filters
                 </button>
               </div>
 
-              <div className="mt-4 flex flex-wrap gap-2">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <p className="text-xs uppercase tracking-[0.3em] text-slate-400">
+                    {activeView === "active" ? "Active Queue" : "Archive"}
+                  </p>
+                  <p className="mt-2 text-sm text-slate-300">
+                    Search and refine by status, priority, severity, and owner.
+                  </p>
+                </div>
+
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
                 {statusFilters.map((status) => (
                   <button
                     key={status}
                     type="button"
                     onClick={() => setActiveStatus(status)}
-                    className={`rounded-full border px-4 py-2 text-sm transition ${
+                    className={`h-10 rounded-full border px-4 text-sm transition-all duration-300 ${
                       activeStatus === status
                         ? "border-red-300/50 bg-red-400/15 text-red-100"
                         : "border-white/10 bg-white/5 text-slate-300 hover:border-white/20 hover:text-white"
@@ -475,34 +589,45 @@ export default function IncidentDashboard() {
                 ))}
               </div>
 
-              <div className="mt-4 grid gap-4 sm:grid-cols-2">
-                <Field
-                  label="Search"
-                  value={searchQuery}
-                  onChange={setSearchQuery}
-                  placeholder="Search title, service, or assignee"
-                />
-
-                <SelectField
-                  label="Priority"
-                  value={activePriority}
-                  onChange={(value) => setActivePriority(value as PriorityFilter)}
-                  options={[...priorityFilters]}
-                />
-
-                <SelectField
-                  label="Severity"
-                  value={activeSeverity}
-                  onChange={(value) => setActiveSeverity(value as SeverityFilter)}
-                  options={[...severityFilters]}
-                />
+              <div className="flex flex-wrap items-end gap-3">
+                <div className="min-w-[240px] flex-[1_1_280px]">
+                  <Field
+                    label="Search"
+                    value={searchQuery}
+                    onChange={setSearchQuery}
+                    placeholder="Search title, service, or assignee"
+                  />
+                </div>
+                <div className="min-w-[180px] flex-[0_1_200px]">
+                  <SelectField
+                    label="Priority"
+                    value={activePriority}
+                    onChange={(value) =>
+                      setActivePriority(value as PriorityFilter)
+                    }
+                    options={[...priorityFilters]}
+                  />
+                </div>
+                <div className="min-w-[180px] flex-[0_1_200px]">
+                  <SelectField
+                    label="Severity"
+                    value={activeSeverity}
+                    onChange={(value) =>
+                      setActiveSeverity(value as SeverityFilter)
+                    }
+                    options={[...severityFilters]}
+                  />
+                </div>
               </div>
 
-              <p className="mt-4 text-sm text-slate-400">
+              <p className="text-sm text-slate-400">
                 Showing {filteredIncidents.length} incident
                 {filteredIncidents.length === 1 ? "" : "s"}
-                {activeStatus !== "All" || hasActiveSecondaryFilters
+                {activeView === "archived" ||
+                activeStatus !== "All" ||
+                hasActiveSecondaryFilters
                   ? ` for ${describeActiveView(
+                      activeView,
                       activeStatus,
                       activePriority,
                       activeSeverity,
@@ -517,6 +642,7 @@ export default function IncidentDashboard() {
                 <LoadingIncidentState />
               ) : filteredIncidents.length === 0 ? (
                 <EmptyIncidentState
+                  activeView={activeView}
                   activeStatus={activeStatus}
                   activePriority={activePriority}
                   activeSeverity={activeSeverity}
@@ -526,10 +652,10 @@ export default function IncidentDashboard() {
                 filteredIncidents.map((incident) => (
                   <article
                     key={incident._id}
-                    className="rounded-[1.75rem] border border-white/10 bg-slate-950/60 p-5 shadow-lg shadow-black/10"
+                    className="flex flex-col gap-5 rounded-[1.75rem] border border-white/10 bg-slate-950/60 p-5 shadow-lg shadow-black/10 transition-all duration-300 hover:border-white/15 hover:bg-slate-950/70"
                   >
                     <div className="flex flex-wrap items-start justify-between gap-3">
-                      <div className="space-y-2">
+                      <div className="flex flex-col gap-2">
                         <div className="flex flex-wrap items-center gap-2">
                           <span
                             className={`rounded-full px-3 py-1 text-xs font-medium ring-1 ${statusTone[incident.status]}`}
@@ -557,29 +683,73 @@ export default function IncidentDashboard() {
                       </p>
                     </div>
 
-                    <div className="mt-4 max-w-xs">
-                      <SelectField
-                        label="Update status"
-                        value={incident.status}
-                        onChange={(value) =>
-                          void handleStatusChange(
-                            incident._id,
-                            value as IncidentStatus,
-                          )
-                        }
-                        options={["Open", "Investigating", "Monitoring", "Resolved"]}
-                        disabled={updatingIncidentId === incident._id}
-                      />
+                    <div className="flex flex-wrap items-end gap-3">
+                      <div className="min-w-[220px] max-w-xs flex-1">
+                        <p className="pb-3 text-sm text-slate-300">Update status</p>
+                        <SelectField
+                          label=""
+                          value={incident.status}
+                          onChange={(value) =>
+                            void handleStatusChange(
+                              incident._id,
+                              value as IncidentStatus,
+                            )
+                          }
+                          options={[
+                            "Open",
+                            "Investigating",
+                            "Monitoring",
+                            "Resolved",
+                          ]}
+                          disabled={mutatingIncidentId === incident._id}
+                        />
+                        <p
+                          className={`pt-2 text-xs text-slate-400 transition-all duration-300 ${
+                            mutatingIncidentId === incident._id
+                              ? "translate-y-0 opacity-100"
+                              : "-translate-y-1 opacity-0"
+                          }`}
+                        >
+                          Updating...
+                        </p>
+                      </div>
+
+                      {activeView === "active" &&
+                      incident.status === "Resolved" &&
+                      incident.archived !== true ? (
+                        <div className="flex min-w-[180px] flex-col gap-3">
+                          <span className="select-none pb-3 text-sm text-transparent">
+                            Update status
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => void handleArchive(incident._id)}
+                            disabled={mutatingIncidentId === incident._id}
+                            className="h-10 rounded-full border border-emerald-400/30 bg-emerald-500/10 px-4 text-sm font-medium text-emerald-100 transition-all duration-300 hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            Archive incident
+                          </button>
+                        </div>
+                      ) : null}
                     </div>
 
-                    <p className="mt-4 max-w-3xl text-sm leading-6 text-slate-300">
+                    <p className="max-w-3xl text-sm leading-6 text-slate-300">
                       {incident.description}
                     </p>
 
-                    <div className="mt-5 flex flex-wrap gap-2 text-xs text-slate-300">
-                      <MetaPill label="Service" value={incident.service || "Unassigned"} />
-                      <MetaPill label="Assignee" value={incident.assignee || "Unassigned"} />
-                      <MetaPill label="Reporter" value={incident.createdBy || "System"} />
+                    <div className="flex flex-wrap items-center gap-2 text-xs text-slate-300">
+                      <MetaPill
+                        label="Service"
+                        value={incident.service || "Unassigned"}
+                      />
+                      <MetaPill
+                        label="Assignee"
+                        value={incident.assignee || "Unassigned"}
+                      />
+                      <MetaPill
+                        label="Reporter"
+                        value={incident.createdBy || "System"}
+                      />
                     </div>
 
                     <ActivityTimeline incident={incident} />
@@ -600,7 +770,7 @@ function ToastViewport({ toasts }: { toasts: Toast[] }) {
       {toasts.map((toast) => (
         <div
           key={toast.id}
-          className={`rounded-2xl border px-4 py-3 text-sm shadow-xl backdrop-blur ${
+          className={`rounded-2xl border px-4 py-3 text-sm shadow-xl backdrop-blur transition-all duration-300 ${
             toast.tone === "success"
               ? "border-emerald-400/30 bg-emerald-500/15 text-emerald-50"
               : "border-red-400/30 bg-red-500/15 text-red-50"
@@ -615,9 +785,11 @@ function ToastViewport({ toasts }: { toasts: Toast[] }) {
 
 function StatCard({ label, value }: { label: string; value: number }) {
   return (
-    <div className="rounded-3xl border border-white/10 bg-white/5 p-4">
-      <p className="text-xs uppercase tracking-[0.3em] text-slate-400">{label}</p>
-      <p className="mt-2 text-3xl font-semibold text-white">{value}</p>
+    <div className="flex h-full flex-col gap-2 rounded-3xl border border-white/10 bg-white/5 p-5 transition-all duration-300">
+      <p className="text-xs uppercase tracking-[0.3em] text-slate-400">
+        {label}
+      </p>
+      <p className="text-3xl font-semibold text-white">{value}</p>
     </div>
   );
 }
@@ -636,14 +808,14 @@ function Field({
   required?: boolean;
 }) {
   return (
-    <label className="block space-y-2">
+    <label className="flex w-full flex-col gap-2">
       <span className="text-sm text-slate-300">{label}</span>
       <input
         required={required}
         value={value}
         onChange={(event) => onChange(event.target.value)}
         placeholder={placeholder}
-        className="w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white outline-none transition placeholder:text-slate-500 focus:border-red-300/40 focus:bg-white/8"
+        className="h-10 w-full rounded-2xl border border-white/10 bg-white/5 px-4 text-sm text-white outline-none transition-all duration-300 placeholder:text-slate-500 focus:border-red-300/40 focus:bg-white/8"
       />
     </label>
   );
@@ -663,7 +835,7 @@ function TextAreaField({
   required?: boolean;
 }) {
   return (
-    <label className="block space-y-2">
+    <label className="flex w-full flex-col gap-2">
       <span className="text-sm text-slate-300">{label}</span>
       <textarea
         required={required}
@@ -671,7 +843,7 @@ function TextAreaField({
         onChange={(event) => onChange(event.target.value)}
         placeholder={placeholder}
         rows={5}
-        className="w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white outline-none transition placeholder:text-slate-500 focus:border-red-300/40 focus:bg-white/8"
+        className="w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white outline-none transition-all duration-300 placeholder:text-slate-500 focus:border-red-300/40 focus:bg-white/8"
       />
     </label>
   );
@@ -691,13 +863,17 @@ function SelectField({
   disabled?: boolean;
 }) {
   return (
-    <label className="block space-y-2">
-      <span className="text-sm text-slate-300">{label}</span>
+    <label
+      className={`flex w-full flex-col gap-2 transition-all duration-300 ${
+        disabled ? "opacity-70" : "opacity-100"
+      }`}
+    >
+      {label ? <span className="text-sm text-slate-300">{label}</span> : null}
       <select
         disabled={disabled}
         value={value}
         onChange={(event) => onChange(event.target.value)}
-        className="w-full rounded-2xl border border-white/10 bg-slate-900 px-4 py-3 text-sm text-white outline-none transition focus:border-red-300/40 disabled:cursor-not-allowed disabled:opacity-60"
+        className="h-10 w-full rounded-2xl border border-white/10 bg-slate-900 px-4 text-sm text-white outline-none transition-all duration-300 focus:border-red-300/40 disabled:cursor-not-allowed disabled:opacity-60"
       >
         {options.map((option) => (
           <option key={option} value={option}>
@@ -711,7 +887,7 @@ function SelectField({
 
 function MetaPill({ label, value }: { label: string; value: string }) {
   return (
-    <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5">
+    <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 transition-all duration-200">
       {label}: {value}
     </span>
   );
@@ -746,37 +922,48 @@ function LoadingIncidentState() {
 }
 
 function EmptyIncidentState({
+  activeView,
   activeStatus,
   activePriority,
   activeSeverity,
   searchQuery,
 }: {
+  activeView: IncidentView;
   activeStatus: StatusFilter;
   activePriority: PriorityFilter;
   activeSeverity: SeverityFilter;
   searchQuery: string;
 }) {
   return (
-    <div className="rounded-[1.75rem] border border-dashed border-white/15 bg-[linear-gradient(135deg,rgba(255,255,255,0.05),rgba(255,255,255,0.02))] p-10 text-center">
+    <div className="rounded-[1.75rem] border border-dashed border-white/15 bg-[linear-gradient(135deg,rgba(255,255,255,0.05),rgba(255,255,255,0.02))] p-10 text-center transition-all duration-300">
       <p className="text-xs uppercase tracking-[0.35em] text-red-200/70">
-        Quiet Queue
+        {activeView === "active" ? "Quiet Queue" : "Archive"}
       </p>
       <h3 className="mt-3 text-2xl font-semibold text-white">
-        {activeStatus === "All" &&
+        {activeView === "active" &&
+        activeStatus === "All" &&
         activePriority === "All" &&
         activeSeverity === "All" &&
         searchQuery.trim().length === 0
           ? "No incidents yet."
-          : `No incidents match ${describeActiveView(
-              activeStatus,
-              activePriority,
-              activeSeverity,
-              searchQuery,
-            )}.`}
+          : activeView === "archived" &&
+              activeStatus === "All" &&
+              activePriority === "All" &&
+              activeSeverity === "All" &&
+              searchQuery.trim().length === 0
+            ? "No archived incidents yet."
+            : `No incidents match ${describeActiveView(
+                activeView,
+                activeStatus,
+                activePriority,
+                activeSeverity,
+                searchQuery,
+              )}.`}
       </h3>
       <p className="mx-auto mt-2 max-w-xl text-sm leading-6 text-slate-300">
-        New alerts will land here as soon as the team broadcasts them. You can also
-        create one from the panel on the left to seed the timeline.
+        {activeView === "active"
+          ? "New alerts will land here as soon as the team broadcasts them. You can also create one from the panel on the left to seed the timeline."
+          : "Archived incidents stay in MongoDB and can be searched here whenever the team needs historical context."}
       </p>
     </div>
   );
@@ -845,12 +1032,13 @@ function buildTimeline(incident: IncidentRecord) {
 }
 
 function describeActiveView(
+  incidentView: IncidentView,
   status: StatusFilter,
   priority: PriorityFilter,
   severity: SeverityFilter,
   searchQuery: string,
 ) {
-  const filters = [status, priority, severity].filter(
+  const filters: string[] = [status, priority, severity].filter(
     (value) => value !== "All",
   );
   const normalizedSearch = searchQuery.trim();
@@ -859,7 +1047,27 @@ function describeActiveView(
     filters.push(`search "${normalizedSearch}"`);
   }
 
-  return filters.length > 0 ? filters.join(" + ") : "all incidents";
+  return filters.length > 0 ? filters.join(" + ") : `${incidentView} incidents`;
+}
+
+function matchesIncidentView(incident: IncidentRecord, view: IncidentView) {
+  return view === "archived"
+    ? incident.archived === true
+    : incident.archived !== true;
+}
+
+function upsertIncident(current: IncidentRecord[], incident: IncidentRecord) {
+  const next = current.filter((item) => item._id !== incident._id);
+  return sortIncidents([...next, incident]);
+}
+
+function sortIncidents(incidents: IncidentRecord[]) {
+  return [...incidents].sort((left, right) => {
+    const leftTime = left.createdAt ? new Date(left.createdAt).getTime() : 0;
+    const rightTime = right.createdAt ? new Date(right.createdAt).getTime() : 0;
+
+    return rightTime - leftTime;
+  });
 }
 
 function formatTimestamp(value?: string) {
