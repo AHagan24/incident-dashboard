@@ -1,11 +1,38 @@
-# Incident Dashboard
+## Real-Time Incident Dashboard
 
-Real-time incident management dashboard built with Next.js, TypeScript, MongoDB, Socket.IO, and PostHog.
+A full-stack incident management dashboard built with Next.js, MongoDB, and Socket.IO, featuring real-time updates, advanced filtering, search, and workflow management.
 
 ## 🚀 Live Demo
-https://incident-dashboard-7jtt.onrender.com/
+[View Live App](https://incident-dashboard-7jtt.onrender.com/)
 
-## Screenshots
+## ⚡ Features
+
+-  Real-time incident updates with Socket.IO
+-  Advanced filtering (status, priority, severity)
+-  Search by title, service, and assignee
+-  Incident workflow management (status updates)
+-  Archive system for resolved incidents
+-  Live dashboard metrics
+-  Clean, modern UI with smooth interactions
+
+## 🛠 Tech Stack
+
+- Next.js
+- TypeScript
+- MongoDB (Mongoose)
+- Socket.IO
+- Tailwind CSS
+- PostHog (analytics-ready)
+
+## Getting Started
+
+1. Clone the repo
+2. Install dependencies
+
+```bash
+npm install
+
+## 📸 Screenshots
 
 ### Real-time incident dashboard
 ![Dashboard](./screenshots/dashboard.png)
@@ -18,29 +45,3 @@ https://incident-dashboard-7jtt.onrender.com/
 
 
 
-
-## Features
-
-- Create and track incidents
-- Real-time cross-client updates with Socket.IO
-- MongoDB persistence
-- Status, priority, and severity tracking
-- Analytics instrumentation with PostHog
-- Responsive operations-style dashboard UI
-
-## Tech Stack
-
-- Next.js
-- TypeScript
-- MongoDB + Mongoose
-- Socket.IO
-- PostHog
-- Tailwind CSS
-
-## Getting Started
-
-1. Clone the repo
-2. Install dependencies
-
-```bash
-npm install
