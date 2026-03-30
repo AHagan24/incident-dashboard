@@ -6,9 +6,9 @@
     "node": ">=20"
   },
   "scripts": {
-    "dev": "node server.js --dev",
+    "dev": "node server.cjs --dev",
     "build": "next build",
-    "start": "node server.js",
+    "start": "node server.cjs",
     "lint": "eslint ."
   },
   "dependencies": {
